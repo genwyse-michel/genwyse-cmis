@@ -1,0 +1,5 @@
+# Récupérer des propriétés d'un aspect
+SELECT * from cmis:document as D JOIN cm:titled as T ON T.cmis:objectId = D.cmis:objectId where D.cmis:objectId = 'e33bf5df-5202-4cb6-892e-533de33e0835'
+
+# Rehercher l'ID d'un dossier de type custom dans une arborescence
+SELECT cmis:objectId FROM etu:type_etudiant_dossier WHERE IN_TREE('d746f3b1-f1a7-4792-bb9a-9c6a9fee4191') AND etu:source_info = 'apogee-upmf' AND etu:code_etu = '9258368'  ORDER BY cmis:name
