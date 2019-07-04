@@ -26,6 +26,7 @@ import org.apache.chemistry.opencmis.client.api.ObjectId;
 import org.apache.chemistry.opencmis.client.api.ObjectType;
 import org.apache.chemistry.opencmis.client.api.OperationContext;
 import org.apache.chemistry.opencmis.client.api.Policy;
+import org.apache.chemistry.opencmis.client.api.Property;
 import org.apache.chemistry.opencmis.client.api.QueryResult;
 import org.apache.chemistry.opencmis.client.api.QueryStatement;
 import org.apache.chemistry.opencmis.client.api.Session;
@@ -90,15 +91,27 @@ public class CMISGenwyse {
         else {
           if (use_regex && wanted_prop instanceof String) {
             // Vérification avec regexp
-            String obj_prop = obj.getProperty(prop).getValueAsString();
+            Property<?> objProp = obj.getProperty(prop);
+            if (objProp==null) {
+              // L'objet n'a pas la propriété
+              good_obj = false;
+              break;
+            }
+            String objPropValue = objProp.getValueAsString();
             String wanted_string = (String) wanted_prop;
-            if (!obj_prop.matches(wanted_string)) {
+            if (!objPropValue.matches(wanted_string)) {
               good_obj = false;
               break;
             }
           }
           else {
-            Object obj_prop = obj.getProperty(prop).getValue();
+            Property<?> objProp = obj.getProperty(prop);
+            if (objProp==null) {
+              // L'objet n'a pas la propriété
+              good_obj = false;
+              break;
+            }
+            Object obj_prop = objProp.getValue();
             if (!wanted_prop.equals(obj_prop)) {
               // Les valeurs d'objets sont différentes mais si la valeur attendue est une chaine
               // on va tenter de convertir en String pour les attributs d'un autre type
@@ -367,7 +380,23 @@ public class CMISGenwyse {
       CmisObject object = null;
       if (documentContent!=null) {
         what = "document";
-        object = parent.createDocument(objectProperties, documentContent, VersioningState.MAJOR, policies, addAces, removeAces, oc);
+        // Dans le cas d'un document on peut être amené à demander la création d'un document dont le nom
+        // existe déjà. Ceci existe dans les vraies GED, mais pas dans Alfresco.
+        // On va donc selon la configuration utiliser un suffixe dans le nom (à la façon de share) ou générer
+        // une erreur.
+        //TODO : prendre en compte la config pour la gestion du suffixe
+        int numOrdre = 0;
+        while (true) {
+          String actualName = numOrdre < 1 ? title : title + "-" + numOrdre;
+          objectProperties.put(PropertyIds.NAME, actualName);
+          try {
+            object = parent.createDocument(objectProperties, documentContent, VersioningState.MAJOR, policies, addAces, removeAces, oc);
+            break; // C'est bon
+          } catch (CmisContentAlreadyExistsException e) {
+            numOrdre++; // On retente avec le suffixe suivant
+          }
+          
+        }
       }
       else {
         what = "dossier";
@@ -386,10 +415,6 @@ public class CMISGenwyse {
       logger.debug("["+location+"] " + mess);
       throw new CMISGenwyseException(mess);
     } catch (CmisContentAlreadyExistsException e) {
-      // S'il y a plusieurs lignes à la suite pour le même étudiant, la 2e risque de ne pas le trouver juste
-      // après la création car le dossier n'est pas encore indexé. Il faut donc remonter le problème
-      // pour lancer un update.
-      // Ceci ne devrait pas arriver si les données Apogee n'était pas d'aussi mauvaise qualité.
       throw new CMISGenwyseAlreadyExistException("Création d'un "+what, e);
     } catch (Exception e) {
       String mess = "Exception lors de la création d'un " + what + ": "+e.getMessage();
@@ -422,25 +447,113 @@ public class CMISGenwyse {
     
   }
   
+  public void debugPbProps1 () {
+    ObjectType objectType = gedSession.getTypeDefinition("cmis:folder");
+    logger.error("========================= controle =========================");
+    for (String propName : objectType.getPropertyDefinitions().keySet()) {
+      logger.error(propName);
+      if ("etu:source_ged".contentEquals(propName)) {
+        logger.error("???????????????");
+      }
+    }
+    logger.error("============================================================");
+  }
+  
   public boolean updateObject (CmisObject object, CMISObjectProperties objectProperties, String data_location)
   {
-    // ATTENTION: si une propriété est facultative, mais avec une longueur minimale, ne pas tenter
-    // de mettre une valeur "" car cela produit une erreur. On peut par contre mettre null pour la vider.
-    
-    ObjectType objectType = object.getType();
-    
     // Récupérer les valeurs actuelles des propriétés présentes dans les infos fournies
+
+    // Pour construire les noms des champs dans la requête, si l'on a des types secondaires (aspects),
+    // Il faut faire une jointure, et dans ce cas 
+    // il semble obligatoire d'utiliser un alias pour les noms de table (dans le cas contraire
+    // la jointure est rejetée). On construit donc la requête avec un alias systématique pour la table
+    // principale et pour les champs des aspects.
+    
+    // Tableau de correspondance table / alias (les alias seront de la forme Tn)
+    // et table de correspondance propriété => alias
+    Map<String,String> aliasByTable = new HashMap<String,String>();
+    Map<String,String> aliasByProp = new HashMap<String,String>();
+    Map<String,String> aspectByProp = new HashMap<String,String>();
+    
+    int currentTable = 1;
+    ObjectType objectType = object.getType();
+    String alias = "T"+currentTable++;
+    String objectTypeName = objectType.getQueryName();
+    aliasByTable.put(objectTypeName, alias);
+    // Recherche des propriétés du type principal
+    for (String propName : objectType.getPropertyDefinitions().keySet()) {
+      // Pour chaque propriété de l'alias
+      aliasByProp.put(propName, alias);
+    }
+    
+    // A-t-on des types secondaires ?
+    List<String> secondaryTypes = (List<String>) objectProperties.get(PropertyIds.SECONDARY_OBJECT_TYPE_IDS);
+    if (secondaryTypes!=null) {
+      for (String aspectName : secondaryTypes) {
+        ObjectType aspect = gedSession.getTypeDefinition(aspectName);
+        String queryName = aspect.getQueryName();
+        if (!aliasByTable.containsKey(queryName)) { // Ne pas remettre le type principal
+          alias = "T"+currentTable++;
+          aliasByTable.put(queryName, alias);
+          
+          // Recherche des propriétés de l'aspect
+          for (String propName : aspect.getPropertyDefinitions().keySet()) {
+            // Pour chaque propriété de l'alias pas déjà présente
+            if (!aliasByProp.containsKey(propName)) {
+              aliasByProp.put(propName, alias);
+              aspectByProp.put(propName, aspectName);
+            }
+          }
+        }
+      }
+    }
+    
+    // L'objet est-il un document (comportement différent dans ce cas)
+    boolean isDocument = (object instanceof Document);
+    
     StringBuffer queryBuffer = new StringBuffer();
     boolean first = true;
     queryBuffer.append("SELECT ");
     for (String propName: objectProperties.keySet()) {
+      if (propName.contentEquals(PropertyIds.SECONDARY_OBJECT_TYPE_IDS)) {
+        // On ne récupère pas cette propriété qui n'est pas un champ mais un type ou un aspect
+        continue;
+      }
       if (first) first = false;
       else queryBuffer.append(",");
+      
+      // A quel type appartient la propriété ?
+      // NB: En cas de doute on prend le type principal
+      queryBuffer.append(aliasByProp.get(propName));
+      queryBuffer.append(".");
       queryBuffer.append(propName);
     }
     queryBuffer.append(" FROM ");
     queryBuffer.append(objectType.getQueryName());
-    queryBuffer.append(" WHERE cmis:objectId = ?");
+    queryBuffer.append(" AS ");
+    queryBuffer.append(aliasByTable.get(objectType.getQueryName()));
+    
+    // Les jointures avec les aspects
+    if (aliasByTable.size()>1) {
+      for (String tableName : aliasByTable.keySet()) {
+        if (!tableName.equals(objectTypeName)) {
+          queryBuffer.append(" LEFT JOIN ");
+          queryBuffer.append(tableName);
+          queryBuffer.append(" AS ");
+          queryBuffer.append(aliasByTable.get(tableName));
+          queryBuffer.append(" ON ");
+          queryBuffer.append(aliasByTable.get(tableName));
+          queryBuffer.append(".cmis:objectId = ");
+          queryBuffer.append(aliasByTable.get(objectTypeName));
+          queryBuffer.append(".cmis:objectId");
+          queryBuffer.append(" ");
+        }
+      }
+    }
+    
+    queryBuffer.append(" WHERE ");
+    queryBuffer.append(aliasByTable.get(objectTypeName));
+    queryBuffer.append(".cmis:objectId = ?");
     QueryStatement qs = gedSession.createQueryStatement(queryBuffer.toString());
     qs.setString(1, object.getId());
     ItemIterable<QueryResult> results = gedSession.query(qs.toQueryString(), false);
@@ -462,45 +575,75 @@ public class CMISGenwyse {
         }
         Object oldPropValue = result.getPropertyValueById(propName);
         Object newPropValue = objectProperties.get(propName);
-
-        PropertyDefinition<?> propDef = object.getProperty(propName).getDefinition();
+        Property<?> prop = object.getProperty(propName);
         boolean toSet = false;
-        if (oldPropValue==null && newPropValue!=null) {
-          toSet = true;
-        }
-        else if (oldPropValue==null && newPropValue==null) {
-        }
-        else if (newPropValue==null && oldPropValue.equals("")) {
-          // On a une chaine vide, et la nouvelle valeur est null, on n'y touche pas
-        } 
-        else if (oldPropValue!=null && newPropValue==null) {
-          // On vide une propriété
+        if (prop==null) {
+          // L'objet n'a pas la propriété, il faut la créer (avec l'aspect)
+          String aspectName = aspectByProp.get(propName);
+          if (aspectName!=null) {
+            // L'ajouter aux types secondaires
+            List<String> addedSecondaryTypes = (List<String>) propsToSet.get(PropertyIds.SECONDARY_OBJECT_TYPE_IDS);
+            if (addedSecondaryTypes==null) {
+              addedSecondaryTypes = new LinkedList<String>();
+            }
+            if (!addedSecondaryTypes.contains(aspectName)) {
+              addedSecondaryTypes.add(aspectName);
+              propsToSet.put(PropertyIds.SECONDARY_OBJECT_TYPE_IDS, addedSecondaryTypes);
+            }
+          }
           toSet = true;
         }
         else {
-          // Compare les valeurs
-          // Selon le type de donnée la comparaison diffère
-          switch (propDef.getPropertyType()) {
-          case STRING:
-          case BOOLEAN:
-            toSet = !oldPropValue.equals(newPropValue);
-            break;
-          case INTEGER: {
-              Integer newInteger = (Integer) newPropValue;
-              BigInteger oldBigInteger = (BigInteger) oldPropValue;
-              toSet = newInteger.intValue() != oldBigInteger.intValue();
-  
+          PropertyDefinition<?> propDef = prop.getDefinition();
+          
+          if (oldPropValue==null && newPropValue!=null) {
+            toSet = true;
+          }
+          else if (oldPropValue==null && newPropValue==null) {
+          }
+          else if (newPropValue==null && oldPropValue.equals("")) {
+            // On a une chaine vide, et la nouvelle valeur est null, on n'y touche pas
+          } 
+          else if (oldPropValue!=null && newPropValue==null) {
+            // On vide une propriété
+            toSet = true;
+          }
+          else {
+            // Pour les documents, la propriété NAME n'est pas significative car elle peut 
+            // avoir été suffixée. 
+            if (isDocument) {
+              if (propName.equals(PropertyIds.NAME)) {
+                if (((String)oldPropValue).startsWith((String)newPropValue)) {
+                  // Le nom enregistré est dérivé du nom à avoir => OK
+                  continue;
+                }
+              }
             }
-            break;  
-          case DATETIME:
-            {
-              Date newDate = (Date) newPropValue;
-              GregorianCalendar oldCal = (GregorianCalendar) oldPropValue;
-              toSet = newDate.getTime() != oldCal.getTimeInMillis();
+            
+            // Compare les valeurs
+            // Selon le type de donnée la comparaison diffère
+            switch (propDef.getPropertyType()) {
+            case STRING:
+            case BOOLEAN:
+              toSet = !oldPropValue.equals(newPropValue);
+              break;
+            case INTEGER: {
+                Integer newInteger = (Integer) newPropValue;
+                BigInteger oldBigInteger = (BigInteger) oldPropValue;
+                toSet = newInteger.intValue() != oldBigInteger.intValue();
+    
+              }
+              break;  
+            case DATETIME:
+              {
+                Date newDate = (Date) newPropValue;
+                GregorianCalendar oldCal = (GregorianCalendar) oldPropValue;
+                toSet = newDate.getTime() != oldCal.getTimeInMillis();
+              }
+              break;
+            default:
+              toSet = !oldPropValue.equals(newPropValue);
             }
-            break;
-          default:
-            toSet = !oldPropValue.equals(newPropValue);
           }
         }
         if (toSet) {
@@ -529,10 +672,11 @@ public class CMISGenwyse {
     // que la GED attend une String (cas du code étudiant, Integer dans DocuShare et String
     // dans Alfresco).
     CMISObjectProperties objectProperties = new CMISObjectProperties(gedSession);
-    
+   
     // Les définitions des propriétés de l'objet
     ObjectType objectType = gedSession.getTypeDefinition(objectTypeName);
-    Map<String, PropertyDefinition<?>> propDefs = objectType.getPropertyDefinitions();
+    Map<String, PropertyDefinition<?>> propDefs = new HashMap<String, PropertyDefinition<?>>();
+    propDefs.putAll(objectType.getPropertyDefinitions());
     
     // Ajout des définitions des propriétés des types secondaires
     @SuppressWarnings("unchecked")
