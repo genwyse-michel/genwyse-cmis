@@ -1,5 +1,6 @@
 package com.genwyse.cmis;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -247,7 +248,7 @@ public class CMISGenwyse {
     if (collectionType==null||"".equals(collectionType)) {
       collectionType = "cmis:folder";
     }
-    CmisObject cmisObject = createObject(parent, collectionType, title, props, rights, null, location);
+    CmisObject cmisObject = createObject(parent, collectionType, title, props, rights, null, null, null, location);
     return (Folder) cmisObject;
   }
   
@@ -351,7 +352,7 @@ public class CMISGenwyse {
     return null;
   }
   
-  public CmisObject createObject (Folder parent, String objectType, String title, Map<String,Object> properties, Rights rights, ContentStream documentContent, String location) throws CMISGenwyseException, CMISGenwyseAlreadyExistException {
+  public CmisObject createObject (Folder parent, String objectType, String title, Map<String,Object> properties, Rights rights, byte[] documentContent, String filename, String mimeType, String location) throws CMISGenwyseException, CMISGenwyseAlreadyExistException {
 
     String what = "objet";
     try {
@@ -389,8 +390,13 @@ public class CMISGenwyse {
         while (true) {
           String actualName = numOrdre < 1 ? title : title + "-" + numOrdre;
           objectProperties.put(PropertyIds.NAME, actualName);
+          
+          // Le contenu du document
+          InputStream documentContentStream = new ByteArrayInputStream(documentContent);
+          ContentStream cs = new ContentStreamImpl(filename, BigInteger.valueOf(documentContent.length), mimeType, documentContentStream);
+
           try {
-            object = parent.createDocument(objectProperties, documentContent, VersioningState.MAJOR, policies, addAces, removeAces, oc);
+            object = parent.createDocument(objectProperties, cs, VersioningState.MAJOR, policies, addAces, removeAces, oc);
             break; // C'est bon
           } catch (CmisContentAlreadyExistsException e) {
             numOrdre++; // On retente avec le suffixe suivant
@@ -487,6 +493,7 @@ public class CMISGenwyse {
     }
     
     // A-t-on des types secondaires ?
+    @SuppressWarnings("unchecked")
     List<String> secondaryTypes = (List<String>) objectProperties.get(PropertyIds.SECONDARY_OBJECT_TYPE_IDS);
     if (secondaryTypes!=null) {
       for (String aspectName : secondaryTypes) {
@@ -582,6 +589,7 @@ public class CMISGenwyse {
           String aspectName = aspectByProp.get(propName);
           if (aspectName!=null) {
             // L'ajouter aux types secondaires
+            @SuppressWarnings("unchecked")
             List<String> addedSecondaryTypes = (List<String>) propsToSet.get(PropertyIds.SECONDARY_OBJECT_TYPE_IDS);
             if (addedSecondaryTypes==null) {
               addedSecondaryTypes = new LinkedList<String>();
@@ -698,14 +706,14 @@ public class CMISGenwyse {
     return objectProperties;
   }
   
-  public Document createDocument (Folder parent, String objectType, String title, CMISObjectProperties props, Rights rights, ContentStream documentContent, String location) throws CMISGenwyseAlreadyExistException, CMISGenwyseException {
+  public Document createDocument (Folder parent, String objectType, String title, CMISObjectProperties props, Rights rights, byte[] documentContent, String filename, String mimeType, String location) throws CMISGenwyseAlreadyExistException, CMISGenwyseException {
     if (objectType==null||"".equals(objectType)) {
       objectType = "cmis:document";
     }
     if (props==null) {
       props = new CMISObjectProperties(gedSession);
     }
-    CmisObject cmisObject = createObject(parent, objectType, title, props, rights, documentContent, location);
+    CmisObject cmisObject = createObject(parent, objectType, title, props, rights, documentContent, filename, mimeType, location);
     return (Document) cmisObject;
   }
   public boolean updateFolder (Folder folder, CMISObjectProperties folderProperties, String dataLocation) {
