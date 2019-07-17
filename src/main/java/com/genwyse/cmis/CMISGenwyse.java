@@ -36,6 +36,7 @@ import org.apache.chemistry.opencmis.commons.PropertyIds;
 import org.apache.chemistry.opencmis.commons.data.Ace;
 import org.apache.chemistry.opencmis.commons.data.ContentStream;
 import org.apache.chemistry.opencmis.commons.definitions.PropertyDefinition;
+import org.apache.chemistry.opencmis.commons.enums.Updatability;
 import org.apache.chemistry.opencmis.commons.enums.VersioningState;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisConnectionException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisConstraintException;
@@ -60,9 +61,15 @@ public class CMISGenwyse {
   }
 
   private Session gedSession = null;
-  
+  private boolean correctNames = true;
+
   public CMISGenwyse(Session gedSession) {
+    this(gedSession, true);
+  }
+  
+  public CMISGenwyse(Session gedSession, boolean correctNames) {
     this.gedSession = gedSession;
+    this.correctNames = correctNames;
   }
   
   public static void moveObject (FileableCmisObject item, Folder fromFolder, Folder toFolder) 
@@ -314,7 +321,7 @@ public class CMISGenwyse {
       FileableCmisObject item = lookupChildByProps(parent, propsToSearch);
       if (item instanceof Document) {
         Document oldDoc = (Document) item;
-        logger.info("Le document existe : mise à jour de: "+oldDoc.getId());
+        logger.debug("Le document existe : mise à jour de: "+oldDoc.getId());
         Document pwc = null;
         try {
           ObjectId pwcId = oldDoc.checkOut();
@@ -355,12 +362,21 @@ public class CMISGenwyse {
   public CmisObject createObject (Folder parent, String objectType, String title, Map<String,Object> properties, Rights rights, byte[] documentContent, String filename, String mimeType, String location) throws CMISGenwyseException, CMISGenwyseAlreadyExistException {
 
     String what = "objet";
+    
     try {
       Map<String, Object> objectProperties = convertProperties(objectType, properties, location);
       if (title!=null) {
         objectProperties.put(PropertyIds.NAME, title);
       }
       objectProperties.put(PropertyIds.OBJECT_TYPE_ID, objectType);
+      
+      // Corrige éventuellement le nom d'objet
+      if (correctNames) {
+        objectProperties.put(PropertyIds.NAME, correctName((String)objectProperties.get(PropertyIds.NAME)));
+      }
+      
+      // Nom de l'objet
+      String objectName = (String)objectProperties.get(PropertyIds.NAME);
       
       List<Ace> addAces = new LinkedList<Ace>();
       List<Ace> removeAces = new LinkedList<Ace>();
@@ -388,7 +404,7 @@ public class CMISGenwyse {
         //TODO : prendre en compte la config pour la gestion du suffixe
         int numOrdre = 0;
         while (true) {
-          String actualName = numOrdre < 1 ? title : title + "-" + numOrdre;
+          String actualName = numOrdre < 1 ? objectName : objectName + "-" + numOrdre;
           objectProperties.put(PropertyIds.NAME, actualName);
           
           // Le contenu du document
@@ -515,6 +531,11 @@ public class CMISGenwyse {
       }
     }
     
+    // Corrige éventuellement le nom d'objet
+    if (correctNames) {
+      objectProperties.put(PropertyIds.NAME, correctName((String)objectProperties.get(PropertyIds.NAME)));
+    }
+    
     // L'objet est-il un document (comportement différent dans ce cas)
     boolean isDocument = (object instanceof Document);
     
@@ -603,6 +624,11 @@ public class CMISGenwyse {
         }
         else {
           PropertyDefinition<?> propDef = prop.getDefinition();
+          
+          // Si la propriété n'est pas modifiable on laisse tomber
+          if (propDef.getUpdatability()!=Updatability.READWRITE) {
+            continue;
+          }
           
           if (oldPropValue==null && newPropValue!=null) {
             toSet = true;
@@ -704,6 +730,26 @@ public class CMISGenwyse {
       }
     }
     return objectProperties;
+  }
+  
+  public String correctName(String objectName) {
+    // Documentation Alfresco https://docs.alfresco.com/6.1/tasks/library-create-folder.html
+    // The folder name does not support the following special characters: * " < > \ / . ? : and |
+    // ! The folder name can include a period as long as it is not the last character.
+    // NB: En réalité c'est la même chose pour le blanc mais ils n'y ont pas pensé...
+    if (objectName==null) {
+      return null;
+    }
+    
+    // Suppression des caractères interdits partout :
+    String correctedName = objectName.replaceAll("[*\"<>\\\\/?|]", "");
+    
+    // Suppression des caractères interdits à la fin (normalement, le point et l'espace)
+    correctedName = correctedName.replaceAll("[ .]+$","");
+    if (!objectName.equals(correctedName)) {
+      logger.warn("Nom corrigé: "+objectName+" => "+correctedName);
+    }
+    return correctedName;
   }
   
   public Document createDocument (Folder parent, String objectType, String title, CMISObjectProperties props, Rights rights, byte[] documentContent, String filename, String mimeType, String location) throws CMISGenwyseAlreadyExistException, CMISGenwyseException {
