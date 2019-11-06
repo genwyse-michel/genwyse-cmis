@@ -521,6 +521,11 @@ public class CMISGenwyse {
   }
   
   public CmisObject createObject (Folder parent, String objectType, String title, Map<String,Object> properties, Rights rights, byte[] documentContent, String filename, String mimeType, String location) throws CMISGenwyseException, CMISGenwyseAlreadyExistException {
+    // Ancienne version de l'API : le nom de document n'a pas d'extension de type fichier.
+    return createObject(parent, objectType, title, properties, rights, documentContent, filename, mimeType, false, location);
+  }
+  
+  public CmisObject createObject (Folder parent, String objectType, String title, Map<String,Object> properties, Rights rights, byte[] documentContent, String filename, String mimeType, boolean useExtensionInName, String location) throws CMISGenwyseException, CMISGenwyseAlreadyExistException {
 
     String what = "objet";
     
@@ -558,6 +563,48 @@ public class CMISGenwyse {
       CmisObject object = null;
       if (documentContent!=null) {
         what = "document";
+        
+        // Dans le cas d'un document on peut avoir à ajouter ou déplacer l'extension de fichier, car Alfresco
+        // ne fournit pas le nom de fichier dans un téléchargement mais le nom du document, ce qui peut
+        // poser des problèmes à l'utilisation.
+        //
+        // Pour gérer cela on extrait l'extension éventuelle du nom de fichier ET du nom fourni (au cas où
+        // cette extension serait déjà présente), de façon à pouvoir reconstituer un nom de document utilisable
+        // possédant un suffixe éventuel (ajouté si plusieurs documents ont le même nom) et une extension.
+        String extension = "";
+        if (useExtensionInName) {
+          String fileExtension = "";
+          String docExtension = "";
+          int posLastDot = filename.lastIndexOf('.');
+          if (posLastDot>=0) {
+            // Le nom de fichier comporte une extension
+            fileExtension = filename.substring(posLastDot);
+          }
+          posLastDot = objectName.lastIndexOf('.');
+          if (posLastDot>=0) {
+            // Le nom de document comporte une extension
+            docExtension = objectName.substring(posLastDot);
+          }
+          
+          // Si les 2 extensions sont identiques on n'en garde qu'une et on ne garde que le nom
+          // sans extension comme nom de document racine.
+          if (fileExtension.equals(docExtension)) {
+            extension = fileExtension;
+            objectName = objectName.substring(0, posLastDot);
+          }
+          else {
+            // Les 2 extensions sont différentes, ou bien un des éléments n'en n'a pas : 
+            // on utilise l'extension de fichier (si elle existe) comme extension finale, et on
+            // ne touche pas au nom de document.
+            //
+            // Remarque : si le fichier n'a pas d'extension il est préférable de ne pas considérer
+            // que le nom en a, car on risquerait de découper arbitrairement ce nom sur un point
+            // présent pour d'autres motifs lors de l'ajout du suffixe d'unicité.
+            //  Ex. : "Chapitre 1.2" => "Chapitre 1-1.2"...
+            extension = fileExtension;
+          }
+        }
+        
         // Dans le cas d'un document on peut être amené à demander la création d'un document dont le nom
         // existe déjà. Ceci existe dans les vraies GED, mais pas dans Alfresco.
         // On va donc selon la configuration utiliser un suffixe dans le nom (à la façon de share) ou générer
@@ -565,7 +612,7 @@ public class CMISGenwyse {
         //TODO : prendre en compte la config pour la gestion du suffixe
         int numOrdre = 0;
         while (true) {
-          String actualName = numOrdre < 1 ? objectName : objectName + "-" + numOrdre;
+          String actualName = numOrdre < 1 ? objectName + extension : objectName + "-" + numOrdre + extension;
           objectProperties.put(PropertyIds.NAME, actualName);
           
           // Le contenu du document
@@ -914,15 +961,20 @@ public class CMISGenwyse {
   }
   
   public Document createDocument (Folder parent, String objectType, String title, CMISObjectProperties props, Rights rights, byte[] documentContent, String filename, String mimeType, String location) throws CMISGenwyseAlreadyExistException, CMISGenwyseException {
+    return createDocument (parent, objectType, title, props, rights, documentContent, filename, mimeType, false, location);
+  }
+  
+  public Document createDocument (Folder parent, String objectType, String title, CMISObjectProperties props, Rights rights, byte[] documentContent, String filename, String mimeType, boolean useExtensionInName, String location) throws CMISGenwyseAlreadyExistException, CMISGenwyseException {
     if (objectType==null||"".equals(objectType)) {
       objectType = "cmis:document";
     }
     if (props==null) {
       props = new CMISObjectProperties(gedSession);
     }
-    CmisObject cmisObject = createObject(parent, objectType, title, props, rights, documentContent, filename, mimeType, location);
+    CmisObject cmisObject = createObject(parent, objectType, title, props, rights, documentContent, filename, mimeType, useExtensionInName, location);
     return (Document) cmisObject;
   }
+  
   
   public boolean updateFolder (Folder folder, CMISObjectProperties folderProperties, String dataLocation) {
     return updateObject (folder, folderProperties, dataLocation);
