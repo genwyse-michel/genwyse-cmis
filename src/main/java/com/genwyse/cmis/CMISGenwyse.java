@@ -35,12 +35,14 @@ import org.apache.chemistry.opencmis.client.util.ContentStreamUtils;
 import org.apache.chemistry.opencmis.commons.PropertyIds;
 import org.apache.chemistry.opencmis.commons.data.Ace;
 import org.apache.chemistry.opencmis.commons.data.ContentStream;
+import org.apache.chemistry.opencmis.commons.data.PropertyData;
 import org.apache.chemistry.opencmis.commons.definitions.PropertyDefinition;
 import org.apache.chemistry.opencmis.commons.enums.Updatability;
 import org.apache.chemistry.opencmis.commons.enums.VersioningState;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisConnectionException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisConstraintException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisContentAlreadyExistsException;
+import org.apache.chemistry.opencmis.commons.exceptions.CmisObjectNotFoundException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisVersioningException;
 import org.apache.chemistry.opencmis.commons.impl.MimeTypes;
 import org.apache.chemistry.opencmis.commons.impl.dataobjects.ContentStreamImpl;
@@ -50,7 +52,7 @@ public class CMISGenwyse {
   private static final Logger logger = Logger.getLogger(CMISGenwyse.class);
   
   public static final String classProp = "class";
-  
+  private long refreshTimeOut = 600000L; // 10 min
   /*
    * Comportement si le document existe déjà
    */
@@ -62,6 +64,10 @@ public class CMISGenwyse {
 
   private Session gedSession = null;
   private boolean correctNames = true;
+
+  public void setRefreshTimeOut(long refreshTimeOut) {
+    this.refreshTimeOut = refreshTimeOut;
+  }
 
   public CMISGenwyse(Session gedSession) {
     this(gedSession, true);
@@ -234,6 +240,161 @@ public class CMISGenwyse {
       }
     }
     return null;
+  }
+  
+  public List<CmisObject> lookupObjects(String query, List<Object> queryParameters, int maxCount) {
+    List<CmisObject> objects = new LinkedList<CmisObject>();
+    
+    QueryStatement qs = gedSession.createQueryStatement(query);
+    int iQueryParameter = 1;
+    for (Object queryParameter : queryParameters) {
+      if (queryParameter instanceof String) {
+        qs.setString(iQueryParameter++, (String) queryParameter);
+      }
+      else {
+        logger.error("Cas de type de propriété non implémenté: "+queryParameter.getClass().getName());
+        qs.setString(iQueryParameter++, queryParameter.toString());
+      }
+    }
+    
+    // La requête compilée
+    String statement = qs.toQueryString();
+    logger.debug("Recherche d'objet : "+statement);
+    ItemIterable<QueryResult> results = gedSession.query(statement, false);
+    int itemCount = 0;
+    for (QueryResult result : results) {
+      itemCount++;
+      if (itemCount>maxCount) {
+        break;
+      }
+      String itemId = (String) result.getPropertyById("cmis:objectId").getFirstValue();
+      CmisObject cmisObject = gedSession.getObject(itemId);
+      objects.add(cmisObject);
+    }
+    logger.debug("Nombre d'item trouvés: "+itemCount);
+
+    return objects;
+
+  }
+  
+  public List<Map<String,Object>> lookupObjectProperties(String query, List<Object> queryParameters, int maxCount) {
+    List<Map<String,Object>> rowProperties = new LinkedList<Map<String,Object>>();
+    
+    QueryStatement qs = gedSession.createQueryStatement(query);
+    int iQueryParameter = 1;
+    for (Object queryParameter : queryParameters) {
+      if (queryParameter instanceof String) {
+        qs.setString(iQueryParameter++, (String) queryParameter);
+      }
+      else if (queryParameter instanceof Integer) {
+        qs.setNumber(iQueryParameter++, (Integer) queryParameter);
+      }
+      else if (queryParameter instanceof Date) {
+        qs.setDateTime(iQueryParameter++, (Date) queryParameter);
+      }
+      else if (queryParameter instanceof Boolean) {
+        qs.setBoolean(iQueryParameter++, (Boolean) queryParameter);
+      }
+      else if (queryParameter == null) {
+        logger.error("Valeur de paramètre de requête nul: n° "+iQueryParameter);
+        qs.setString(iQueryParameter++, "");
+      }
+      else {
+        logger.error("Cas de type de propriété non implémenté: "+queryParameter.getClass().getName());
+        qs.setString(iQueryParameter++, queryParameter.toString());
+      }
+    }
+    
+    // La requête compilée
+    String statement = qs.toQueryString();
+    logger.debug("Recherche d'objet : "+statement);
+    ItemIterable<QueryResult> results = gedSession.query(statement, false);
+    int itemCount = 0;
+    for (QueryResult result : results) {
+      itemCount++;
+      if (itemCount>maxCount) {
+        break;
+      }
+      Map<String,Object> values = new HashMap<String,Object>();
+      for (PropertyData<?> data : result.getProperties()) {
+        String name = data.getQueryName();
+        Object value = data.getValues().get(0);
+        values.put(name, value);
+      }
+      rowProperties.add(values);
+    }
+    logger.debug("Nombre d'item trouvés: "+itemCount);
+
+    return rowProperties;
+
+  }
+  
+  public CmisObject getObject(String objectId, boolean refresh) throws CMISGenwyseException {
+    try {
+      CmisObject object = gedSession.getObject(objectId);
+      if (refresh) {
+        object.refreshIfOld(refreshTimeOut);
+      }
+      return object;
+    } catch (CmisObjectNotFoundException e) {
+      String mess = e.getMessage();
+      logger.error("Erreur en chargeant l'objet "+ objectId+": "+mess);
+      throw new CMISGenwyseException(e.getMessage());
+    }
+  }
+  
+  public Folder getFolder(String objectId, boolean refresh) throws CMISGenwyseException {
+    CmisObject object = getObject(objectId, refresh);
+    if (object instanceof Folder) {
+      return (Folder) object;
+    }
+    
+    else {
+      String mess = "L'objet "+objectId+" n'est pas un dossier";
+      logger.error(mess);
+      throw new CMISGenwyseException(mess);
+    }
+  }
+  
+  public Folder lookupChildFolderByName(Folder folder, String name) throws CMISGenwyseException {
+    CmisObject object = lookupChildByName(folder, name);
+    if (object==null || object instanceof Folder) {
+      return (Folder) object;
+    }
+    
+    else {
+      String mess = "L'objet "+name+" n'est pas un dossier";
+      logger.error(mess);
+      throw new CMISGenwyseException(mess);
+    }
+
+  }
+  public Document getDocument(String objectId, boolean refresh) throws CMISGenwyseException {
+    CmisObject object = getObject(objectId, refresh);
+    if (object==null || object instanceof Document) {
+      return (Document) object;
+    }
+    
+    else {
+      String mess = "L'objet "+objectId+" n'est pas un document";
+      logger.error(mess);
+      throw new CMISGenwyseException(mess);
+    }
+  }
+  
+  /*
+   * Filtre les propriétés disponibles selon le schéma CMIS de l'objet à créer/modifier
+   */
+  public Map<String,Object> filterProperties(Map<String,Object> availableProperties, String objectType) {
+    Map<String,Object> actualProperties = new HashMap<String, Object>();
+    ObjectType type = gedSession.getTypeDefinition(objectType);
+    Map<String, PropertyDefinition<?>> propertyDefinitions = type.getPropertyDefinitions();
+    for (String propName : availableProperties.keySet()) {
+      if (propertyDefinitions.containsKey(propName)) {
+        actualProperties.put(propName, availableProperties.get(propName));
+      }
+    }
+    return actualProperties;
   }
   
   //TODO: voir utilisation de la 1e version + pourqueoi différente ???
@@ -762,6 +923,7 @@ public class CMISGenwyse {
     CmisObject cmisObject = createObject(parent, objectType, title, props, rights, documentContent, filename, mimeType, location);
     return (Document) cmisObject;
   }
+  
   public boolean updateFolder (Folder folder, CMISObjectProperties folderProperties, String dataLocation) {
     return updateObject (folder, folderProperties, dataLocation);
   }
