@@ -2,7 +2,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.genwyse.cmis</groupId>
   <artifactId>genwyse-cmis</artifactId>
-  <version>1.1.1</version>
+  <version>1.1.2</version>
   <name>Genwyse CMIS</name>
   
   <build>
@@ -36,6 +36,11 @@
       <groupId>org.apache.chemistry.opencmis</groupId>
       <artifactId>chemistry-opencmis-client-impl</artifactId>
       <version>1.1.0</version>
+    </dependency>
+    <dependency>
+        <groupId>com.sun.activation</groupId>
+        <artifactId>javax.activation</artifactId>
+        <version>1.2.0</version>
     </dependency>
   </dependencies>
 </project>
