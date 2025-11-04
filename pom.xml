@@ -13,9 +13,9 @@
           <execution>
             <phase>install</phase>
             <configuration>
-              <tasks>
+              <target>
                 <copy file="target/genwyse-cmis-${project.version}.jar" tofile="${basedir}/dist/genwyse-cmis-${project.version}.jar"/>
-              </tasks>
+              </target>
             </configuration>
             <goals>
               <goal>run</goal>
